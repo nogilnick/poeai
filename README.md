@@ -7,6 +7,10 @@ See [my blog series](https://nicholastsmith.wordpress.com/2017/07/08/a-deep-lear
 
 The class that contains the main bot loop.
 
+### BotDebugger.py
+
+A class to help with debugging the main program.
+
 ### Main.py
 
 Program entry point
