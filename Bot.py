@@ -1,71 +1,62 @@
 import numpy as np
 from pymouse import PyMouse
 from pykeyboard import PyKeyboard
+import Const
 from MovementMap import MovementMap
 from TargetingSystem import TargetingSystem
 from ProjMap import ProjMap
 from ScreenViewer import ScreenViewer
-from threading import Thread, Lock
-import time
-import os
 from skimage.io import imread, imsave
+import os
+import time
 import winsound
 
 class Bot:
 
-    MOVE_OKAY = 0       #Enumerated values for movement results
-    MOVE_FAIL = 1
-    MOVE_INPR = 2
-    OBT_WT = 0.01       #Wait times for detection loops
-    ENT_WT = 0.01
-    LWT_WT = 0.01
-
-    def AttackPos(self, pc):
+    def Attack(self):
+        ecp = self.ts.EnemyPositionsToTargets()
+        if len(ecp) == 0:
+            return
+        if self.state == Const.ATCK0 and np.random.rand() > 0.5:
+            self.AttackPos(ecp[np.random.randint(ecp.shape[0])].round(), 'q')
+        if self.state == Const.ATCK1 and np.random.rand() > 0.5:
+            self.AttackPos(ecp[np.random.randint(ecp.shape[0])].round(), 'w')
+        for ecpi in ecp:
+            if np.random.rand() > 0.5:
+                self.AttackPos(ecpi.round(), 'e', np.random.rand() / 3)
+            else:
+                self.AttackPos(ecpi.round(), 't')
+            
+    def AttackPos(self, pc, key, addht = 0):
         '''
         Perform an attack on a given position
         '''
         l, t, _, _ = self.sv.GetWindowPos()
-        pc = (pc[0] + l, pc[1] + t)
-        self.MouseMove(self.m.position(), pc)
-        self.k.press_key('w')
-        time.sleep(np.random.rand() / 2)
-        self.k.release_key('w')
-        print('Attack: ' + str(pc))
+        pc += (l, t)
+        self.tla = time.time()
+        self.MouseMove(self.m.position(), pc, 6 if self.tla - self.lwts < Const.MOV_TO else 1)
+        self.k.press_key(key)
+        hold = Const.CT_LT[key] + addht #Look-up the cast time for this key + optional additional time
+        if hold:                        #Leave key depressed before releasing
+            time.sleep(hold)
+        self.k.release_key(key)
         
     def __init__(self, name):
         self.wname = name               #Name of the game window
         self.sv = ScreenViewer()        #For getting screens of the game
         self.mm = MovementMap()         #Bot's internal map of the world
-        self.ts = TargetingSystem(m = 7, n = 9, ss = (800, 600), sb = (4, 0, 4, 12), cp = (400, 274), forceTrain = False)
-        #self.ts = TargetingSystem(m = 6, n = 9, ss = (1278, 786), cp = (642, 342))
+        self.ts = TargetingSystem(m = 7, n = 9, ss = (800, 600), sb = (4, 0, 4, 12), cp = (400, 274), train = False)
         self.m = PyMouse()              #PyMouse object for triggering mouse input
         self.k = PyKeyboard()           #For triggering keyboard
         self.pm = ProjMap(800, 600)     #Convert between 3d and 2d coords
         self.p = None                   #The current path of the bot
-        self.pt = None                  #The current type of the path (to frontier, item, or home)
-        self.pind = None                #The next element to visit in the path self.p
-        self.ghf = False                #Go home flag
         self.cpi = 0                    #Current potion index
-        self.ssn = 0                    #Debug: screenshot number
-        self.mfc = 0                    #Debug: movement flag count
-        self.lwc = 0                    #LW detection count
         self.hp = None                  #Home position
-        self.pHealth, self.pMana = 0, 0 #Player health and mana
-        self.nmmpm = 1                  #Number of mouse move points multiplier
-        self.ctl = False                #Continue target loop flag
-        self.ecp = []                   #Enemy cell positions
-        self.tlMut = Lock()
-        self.tlut = None                #Targeting loop update time
-        self.tllct = None               #Targeting loop last check time
-        self.lwMut = Lock()             #Mutex lock for checking if LW is happening
-        self.clwl = False               #Continue LW detection loop
-        self.lwof = False               #Lightning-warp occuring flag
-        self.lwuo = False               #Lightning-warp update occured
-        self.obMut = Lock()
-        self.cobl = False
-        self.pct = []                   #Shared grid position list
-        self.pctlu = None               #PCT last update time
-        self.pctlg = None               #PCT last get time
+        self.lwbp = False               #LW Button press occurred
+        self.lwmoved = 0                #LW movement state
+        self.state = Const.EVAD0        #State of bot
+        self.tla = 0
+        self.lwts = 0
         
     def __del__(self):
         pass
@@ -74,51 +65,20 @@ class Bot:
         print('At door; reset instance!')
         raise NotImplementedError('ClickOnDoor not implemented.')
         
-    def CPE(self):
-        if self.p is None:
-            return None
-        return self.p[self.pind]
-        
-    def GetEnemyPositions(self):
-        '''
-        Gets a current list of enemy positions in a thread safe manner
-        '''
-        self.tlMut.acquire()
-        lut = self.tlut         #Last update time for enemy cell positions
-        rv = self.ecp[:]        #Make copy of current list to prevent race conditions
-        self.tlMut.release()
-        if self.tllct == lut:
-            return []           #No update since last time
-        self.tllct = lut        #self.ecp has been updated; update time of last check
-        return rv               #Return copy
+    def Evade(self):
+        l, t, _, _ = self.sv.GetWindowPos()
+        pc = (np.random.randint(250, 500, size = 2) + (l, t)).round().astype(int)
+        self.MouseMove(self.m.position(), pc)
+        self.m.click(int(pc[0]), int(pc[1]), 2)
+        time.sleep(0.64)
         
     def GetPath(self):
-        '''
-        Makes a path for character
-        '''
-        if self.mfc >= 4:   #Moved failed 4 times; move anywhere else
-            #print('Neighbor')
-            self.p = self.mm.GetPathToNeighbor()
-            self.pt = 0
-        elif len(self.mm.ItemPos()) > 0:
-            #print('Item')
-            self.p = self.mm.GetPathToItem()
-            self.pt = 1
-        elif self.ghf:      #Go home flag set; return to start
-            #print('GO HOME!')
-            self.p = self.mm.GetPathToHome()
-            self.pt = 2
-        else:               #Find path to frontier
-            #print('Frontier')
-            self.p = self.mm.GetPathToFrontier()
-            self.pt = 0
-        if self.p is None:  #Character doesn't know where to go
-            #print('Path is still none.')
-            self.p = self.mm.GetPathToNeighbor()
-            self.pt = 0
-        if self.p is None:
-            return False
-        self.pind = max(len(self.p) - 2, 0)
+        if self.state == Const.EXPL0 or self.state == Const.EXPL1 or self.state == Const.EXPL2: 
+            self.p = np.array(self.mm.GetRandomFrontier())
+        elif self.state == Const.HOME0:
+            self.p = np.array(self.mm.GetRandomHome())
+        elif self.state == Const.EVAD0 or self.state == Const.EVAD1:
+            self.p = np.array(self.mm.GetRandomHome())
         return True
         
     def GetPlayerPos(self):
@@ -128,94 +88,17 @@ class Bot:
         cppl = self.ts.CharPos()        #Get pixel location of character on screen
         return self.pm.Solve3DT(cppl[0], cppl[1])   #Get 3d location corresponding to pixel location
         
-    def GetScreenDifference(self):
-        I1, its = self.sv.GetScreenWithTime()
-        #self.k.type_string('z')     #Toggle item highlight
-        while True:                 #Loop until new screen is available
-            time.sleep(0.05)
-            I2, its2 = self.sv.GetScreenWithTime()
-            if its != its2:
-                break   
-        #self.k.type_string('z')             #Toggle item highlight
-        #imsave('DI/' + str(self.ssn) + '.jpg', I1.astype(np.uint8))
-        #self.ssn += 1
-        #imsave('DI/' + str(self.ssn) + '.jpg', I2.astype(np.uint8))
-        #self.ssn += 1
-        R = np.where(np.abs(I1 - I2) >= 16, I2, 0)
-        return R
-        
-    def GetScreenPredictions(self):
-        self.lwMut.acquire()
-        rv = self.pct[:]
-        lut = self.pctlu
-        self.lwMut.release()
-        if self.pctlg == lut:
-            return []           #No update since last time
-        return rv
-        
     def GoToPosition(self, pc):
         '''
         #Click on a given pixel coordinate
         '''
         l, t, _, _ = self.sv.GetWindowPos()
         pc = (pc[0] + l, pc[1] + t)
-        self.MouseMove(self.m.position(), pc)
+        self.lwts = time.time()     #Timestamp for button press
+        self.MouseMove(self.m.position(), pc, 6 if self.lwts - self.tla < Const.MOV_TO else 1)
         self.k.type_string('r')     #Use lightning warp to move to cell
+        self.lwbp = True            #Indicates lightning-warp button has been pressed
         time.sleep(0.1)
-        
-    def GoToPosition2(self, pc):
-        '''
-        Click on a given pixel coordinate
-        '''
-        l, t, _, _ = self.sv.GetWindowPos()
-        pc = (pc[0] + l, pc[1] + t)
-        self.MouseMove(self.m.position(), pc)
-        self.k.type_string('r')     #Use lightning warp to move to cell
-        mf = False
-        r = 0
-        for j in range(64):         #Detect lightning-warp animation
-            r += self.ts.DetectLW(self.sv.GetScreen(), self.ts.CharPos())
-            if r > 2:
-                print('LW1 Break!! ' + str(j))
-                mf = True
-                break
-            time.sleep(0.005)
-        if not mf:
-            return False
-        nllw = 20                   #Number of past DetectLW calls to remember
-        lflw = np.ones((nllw))      #Result of last nllw DetectLW calls
-        for j in range(256):
-            lflw[j % nllw] = self.ts.DetectLW(self.sv.GetScreen(), self.ts.CharPos())
-            if lflw.sum() < 1:
-                print('LW2 Break!! ' + str(j))
-                break
-            time.sleep(0.005)
-        return True
-        
-    def IsMoving(self):
-        self.lwMut.acquire()
-        rv = (self.lwof, self.lwuo)
-        self.lwMut.release()
-        return rv
-       
-    def LWDetectLoop(self):
-        nllw = 20                   #Number of past DetectLW calls to remember
-        lwdt = 10                   #Lightning-warp detection threshold
-        lflw = np.zeros((nllw))     #Result of last nllw DetectLW calls
-        i = 0                       #Index into lflw
-        tlwof = False
-        while self.clwl:
-            #LWPM scales prediction result based on time since LW button was pressed
-            lflw[i] = self.ts.DetectLW(self.sv.GetScreen())
-            print(str(lflw[i]))
-            i = (i + 1) % nllw          #Use lflw as a circular array
-            tlwof = lflw.sum() > lwdt
-            self.lwMut.acquire()
-            if not tlwof and self.lwof: #Update occurs when bot stops moving 
-                self.lwuo = True        #Lightning-warp update occured
-            self.lwof = tlwof
-            self.lwMut.release()
-            time.sleep(Bot.LWT_WT)
         
     def LWTest(self):
         '''
@@ -223,14 +106,17 @@ class Bot:
         '''
         self.sv.GetHWND(self.wname)
         self.sv.Start()
+        time.sleep(1)
+        _, _, _, LW, _, _ = self.ts.ProcessScreen(*self.sv.GetScreenWithPrev())
         l, t, _, _ = self.sv.GetWindowPos()
-        pc = (700 + l, 150 + t)
+        pc = (200 + l, 400 + t)
         self.MouseMove(self.m.position(), pc)
         st = time.time()
         self.k.type_string('r')
-        ftt, ltt = -1, -1
-        for _ in range(10):
-            res = self.ts.DetectLW(self.sv.GetScreen())
+        ftt, ltt, ltf = -1, -1, -1
+        for _ in range(16):
+            _, _, _, LW, _, _ = self.ts.ProcessScreen(*self.sv.GetScreenWithPrev())
+            res = (LW == 1).all()
             print(str(time.time()) + ': ' + str(res))
             if res and ftt == -1:
                 ftt = time.time()
@@ -238,41 +124,26 @@ class Bot:
                 ltt = time.time()   
             else:
                 ltf = time.time()
-            time.sleep(0.1)
         self.sv.Stop()
         print('First True: ' + str(ftt - st))
         print('Last True: ' + str(ltt - st))
         print('Total: ' + str(max(ltt, ltf) - st))
  
-    def MouseMove(self, sp, ep):
-        nmmp = int(16 * self.nmmpm)
-        if self.nmmpm > 1:
-            self.nmmpm = 1
-        x = np.linspace(sp[0], ep[0], num = nmmp)
-        y = np.linspace(sp[1], ep[1], num = nmmp)
-        for i in range(len(x)):
-            self.m.move(int(x[i]), int(y[i]))
+    def MouseMove(self, sp, ep, nmmpm = 1):
+        '''
+        Moves the mouse smoothly from sp to ep
+        '''
+        nmmp = int(16 * nmmpm)
+        x = np.linspace(sp[0], ep[0], num = nmmp).round()
+        y = np.linspace(sp[1], ep[1], num = nmmp).round()
+        for xi, yi in zip(x, y):
+            self.m.move(int(xi), int(yi))
             time.sleep(0.00005)
-    
-    def NextPathEle(self):
-        self.pind -= 1
- 
-    def ObjDetectLoop(self):
-        while self.ctl:     #Loop while continue targeting loop flag is set
-            self.ts.ClassifyInput(self.sv.GetScreen())      #Predicted cell types for portions of the screen
-            #self.ts.DisplayPred()
-            WP, PP = self.pm.GridIter()
-            n = WP.shape[0]
-            PCT = [(WP[i][0:3], CIi, self.ts.CellLookup(CIi)) for i, CIi in enumerate(self.ts.PixelToCell(PPi) for PPi in PP)]
-            PCT = [PCTi for PCTi in PCT if PCTi[2] is not None]     #Filter out any grid cells covered by HUD
-            self.obMut.acquire()
-            self.pct = PCT              #Update shared grid position list
-            self.pctlu = time.time()    #Update time
-            self.obMut.release()
-            time.sleep(Bot.OBT_WT)
- 
+
     def PathDone(self):
-        return self.p is None or self.pind < 0
+        if self.p is None or self.state == Const.EVAD0 or self.state == Const.EVAD1:
+            return True
+        return self.mm.CellAdjacent(self.p, self.mm.GetPosition())
     
     def PickupItem(self):
         if self.p is None:
@@ -304,52 +175,58 @@ class Bot:
         self.Start()
         cv, M_ITER = 0, 64            #Counter value and max number of loops
         while True:
-            if cv >= M_ITER and not self.ghf:
-                self.ghf = True
+            if cv >= M_ITER and self.state != Const.HOME0:
+                self.state = Const.HOME0
                 cv = 0
-            if self.ghf and cv >= M_ITER:
+            if self.state == Const.HOME0 and cv >= M_ITER:
                 break
-            self.pHealth = self.ts.GetHealth(self.sv.GetScreen())
-            self.pMana = self.ts.GetMana(self.sv.GetScreen())
-            if self.pHealth < 0.75:      #Life is lower than 75%; use potion
+            OBS, ECP, MOV, LW, PH, PM = self.ts.ProcessScreen(*self.sv.GetScreenWithPrev())
+            if (PH < Const.HLOW).any():      #Life is lower than 75%; use potion
                 self.UseHealthPotion()
-            if self.pMana < 0.25:       #Mana is lower than 25%; user potion
+            if (PM < Const.MLOW).any():       #Mana is lower than 25%; user potion
                 self.UseManaPotion()
-            MSF = self.UpdatePosition()
-            if MSF == Bot.MOVE_INPR:       #Bot is still moving; don't try to move now
-                print('Moving.')
-                time.sleep(0.05)
-                continue    
-            if MSF == Bot.MOVE_OKAY:    #Predict open/obstacle if character moved
+            MSF = self.UpdatePosition(LW)
+            if MSF == Const.MOVE_INPR:      #Bot is still moving; don't try to move now
+                #print('Moving.')
+                time.sleep(0.01)
+                continue
+            self.UpdateState(MSF == Const.MOVE_OKAY, (PH < Const.HLOW).any(), MSF == Const.MOVE_FAIL, (ECP & MOV).sum() > 0)
+            print(Const.STN[self.state])
+            if MSF == Const.MOVE_OKAY:    #If LW is predicted to be occuring
                 cv += 1
-                print("Moved to: " + str(self.CPE()))
-                winsound.Beep(600, 250)
-                for WP, CI, PCTi in self.GetScreenPredictions():
-                    self.mm.InsertCellPrelim(WP, PCTi, (not self.ts.IsEdgeCell(*CI)) or (PCTi == 'C'))
-                if self.mm.InsertFinished():    #Insert cells into map; may shift player location
-                    self.ShiftMap()             #Translate projection to match new location
-                    self.p = None               #Need to recompute path from new location
-            if MSF == Bot.MOVE_FAIL:
+                print("Moved to: " + str(self.cpe))
+                #winsound.Beep(600, 250)
+            elif MSF == Const.MOVE_FAIL:
                 print("Move Failed.")
-                winsound.Beep(440, 250)
-            ecp = self.GetEnemyPositions()
-            for ecpi in ecp:        #Attack enemies
-                self.AttackPos(tuple(int(k) for k in ecpi.round()))
+                #winsound.Beep(440, 250)
+            elif MSF == Const.MOVE_NONE:
+                print("Not moving")
+            else:
+                print("Move Unknown.")
+            WP, PP = self.pm.GridIter() #Update map with current predictions
+            PPCI = self.ts.PixelToCell(PP)
+            CPCT, IGC = self.ts.CellLookup(PPCI)
+            for i, IGCi, in enumerate(IGC):
+                self.mm.InsertCell(WP[IGCi], CPCT[i], (not self.ts.IsEdgeCell(*PPCI[IGCi])) or (CPCT[i] == Const.PL_C))
             #Check for items on the screen. Doesn't work well!!
             #self.PickupItem()     
-            if len(ecp) > 0:
-                self.SlowMouseMove()
+            if self.state == Const.ATCK0 or self.state == Const.ATCK1:
+                self.Attack()   #Attack if in appropriate state
+                continue        #Don't try to move in attacking state
+            if self.state == Const.EVAD0:
+                self.Evade()
+                continue
             if self.PathDone():         #If there is no route current; find a new path
-                if self.ghf and self.mm.AtHome():   
+                if self.state == Const.HOME0 and self.mm.AtHome():   
                     self.ClickOnDoor()              #Back to start
-                elif self.pt == 1:                  
-                    self.PickupItem()               #Pickup item on screen
-                if not self.GetPath():
-                    print("Couldn't make path...")
-                    time.sleep(0.05)
-                    continue                        #Failed to find a path; try again
+                #elif self.pt == 1:                  
+                #    self.PickupItem()               #Pickup item on screen
+                self.GetPath()
+            OWP, OPP = WP[IGC], PP[IGC]
+            ci = np.square(OWP - self.p).sum(axis = 1).argmin()
+            self.cpe, l2d = OWP[ci], OPP[ci]
             #Get pixel location on screen of 3d cell to go to
-            l2d = tuple(int(k) for k in self.pm.Get2DT(np.array([self.CPE()])).ravel().round())
+            l2d = tuple(int(k) for k in l2d.round())
             self.GoToPosition(l2d)    #Perform lightning-warp
             
     def ShiftMap(self, st = None):
@@ -358,9 +235,6 @@ class Bot:
         cpx, cpy, cpz = st  #X, Y, Z components of shift
         hpx, hpy, hpz = self.hp
         self.pm.TranslateM(hpx - cpx, hpy - cpy, hpz - cpz)
-            
-    def SlowMouseMove(self):
-        self.nmmpm = 10
         
     def Start(self):
         self.sv.Start()                 #Start capturing images of the window
@@ -368,54 +242,10 @@ class Bot:
         self.hp = cp3d                  #Update data member
         self.mm.Start(cp3d)             #Update internal map
         self.p = None                   #The current path (of Exile, HA!)
-        self.StartTargetLoop()          #Start obtaining targets concurrently
-        self.StartObjLoop()             #Start detecting obstacles concurrently
-        self.StartLWLoop()              #Start detecting lightning-warp
-            
-    def StartLWLoop(self):
-        self.clwl = True
-        thrd = Thread(target = self.LWDetectLoop)
-        thrd.start()
-        return True   
-        
-    def StartObjLoop(self):
-        self.cobl = True
-        thrd = Thread(target = self.ObjDetectLoop)
-        thrd.start()
-        return True   
-            
-    def StartTargetLoop(self):
-        self.ctl = True
-        thrd = Thread(target = self.TargetLoop)
-        thrd.start()
-        return True
             
     def Stop(self):
         #Notify all concurrent threads to stop
-        self.StopObjDetectLoop()
-        self.StopTargetLoop()
-        self.StopLWLoop()
         self.sv.Stop()
-        
-    def StopLWLoop(self):
-        self.clwl = False
-        
-    def StopObjDetectLoop(self):
-        self.cobl = False
-        
-    def StopTargetLoop(self):
-        self.ctl = False        #Turn off continue targeting loop flag
-        
-    def TargetLoop(self):
-        while self.ctl:     #Loop while continue targeting loop flag is set
-            self.ts.DetectMovement(self.GetScreenDifference())  #Find cells that have movement
-            self.ts.ClassifyDInput(self.sv.GetScreen())         #Determine which cells contain enemies or items
-            tecp = self.ts.EnemyPositionsToTargets()            #Obtain target locations
-            self.tlMut.acquire()
-            self.ecp = tecp                                     #Update shared enemy position listed
-            self.tlut = time.time()                             #Update time
-            self.tlMut.release()   
-            time.sleep(Bot.ENT_WT)
         
     def SplitSave(self, p = 'TSD/Train/Images', wp = 'TSD/Train/Split'):
         '''
@@ -449,7 +279,7 @@ class Bot:
         if not os.path.exists(os.path.join(wp, 'Overlay')):
             os.mkdir(os.path.join(wp, 'Overlay'))
         #Use old targeting system to classify new input
-        #ts2 = TargetingSystem(m = 6, n = 9, ss = (1278, 786), cp = (642, 342), forceTrain = True)
+        #ts2 = TargetingSystem(m = 6, n = 9, ss = (1278, 786), cp = (642, 342), train = True)
         self.ts.C.RestoreClasses(['C', 'O', 'E'])
         dl = os.listdir(os.path.join(p, 'Split'))
         S, F = [], []
@@ -487,25 +317,42 @@ class Bot:
                 S, F = [], []
         print(str(c))
         
-    def UpdatePosition(self):
-        isMoving, hasMoved = self.IsMoving()
-        if isMoving:        #Bot is still moving
-            return Bot.MOVE_INPR
-        if hasMoved:        #Bot was moving but has now stopped
-            self.mm.MoveTo(self.CPE())  #Update char pos in movement map
+    def TSTest(self):
+        '''
+        Test performance of the targeting system
+        '''
+        self.sv.GetHWND(self.wname)
+        self.sv.Start()
+        for _ in range(16):
+            t1 = time.time()
+            self.ts.ProcessScreen(*self.sv.GetScreenWithPrev())
+            print(str(time.time() - t1))  
+        self.sv.Stop()
+        
+    def UpdatePosition(self, LW):
+        if not self.lwbp:
+            return Const.MOVE_NONE
+        mov = (LW == 1).all()
+        if self.lwmoved < 2 and mov:
+            self.lwmoved = 1
+            return Const.MOVE_INPR
+        if self.lwmoved == 1 and not mov:
+            self.lwbp = False           #Consume button press; prevents spurious movement updates
+            self.lwmoved = 0
+            self.mm.MoveTo(self.cpe)    #Update char pos in movement map
             self.ShiftMap()             #Translate projection map
-            self.NextPathEle()          #Move on to next element in the path
             self.mm.ClearBlocked()      #Blocked cells may change after moving        
-            self.lwMut.acquire()
-            self.lwuo = False           #Turn off the updated flag
-            self.lwMut.release()
-            return Bot.MOVE_OKAY
-        #Only executes if neither condition above is true; meaning the bot failed to move entirely
-        if self.CPE() is None:
-            return Bot.MOVE_OKAY    #Path is none when bot first starts
-        self.mm.InsertBlocked(self.CPE())
-        self.p = None           #Path didn't work; find new one
-        return Bot.MOVE_FAIL
+            return Const.MOVE_OKAY
+        if self.lwmoved == 0 and (time.time() - self.lwts) > Const.LW_TIMEOUT:
+            self.lwbp = False       #Consume button press; prevents spurious movement updates
+            self.mm.InsertBlocked(self.cpe)
+            self.p = None           #Path didn't work; find new one
+            return Const.MOVE_FAIL  #No movement occured within the timeout
+        return Const.MOVE_UNKW
+        
+    def UpdateState(self, M, H, F, E):
+        j = (M << 3) | (H << 2) | (F << 1) | E     #Column index into state table
+        self.state = Const.STT[self.state][j]
         
     def UseHealthPotion(self):
         self.k.type_string(str(self.cpi + 1))

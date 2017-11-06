@@ -59,7 +59,7 @@ class ProjMap:
         PR = np.dot(GP, PT)
         PR = (PR[:, 0:2] / PR[:, [2]])
         ind = ((PR >= np.array([0, 0])) & (PR < np.array([self.w, self.h]))).sum(axis = 1) == 2
-        return GP[ind], PR[ind]
+        return GP[ind, 0:3], PR[ind]
 
     def Solve3D(self, x, y, M = None):
         if M is None:

@@ -3,15 +3,16 @@ import matplotlib.pyplot as mpl
 from threading import Thread
 import time
 import traceback
+import Const
 
 def CF(pct):
-    if pct == 'C':
+    if pct == Const.PL_C:
         return 'y'
-    if pct == 'O':
+    if pct == Const.PL_O:
         return 'b'
     if pct == 'E':
         return 'r'
-    if pct == 'N':
+    if pct == -1:
         return 'k'
     return 'g'
 
@@ -22,16 +23,25 @@ class BotDebugger:
         self.sct = None     #Debug: Scatter plot for displaying grid
         self.lf = False     #Loop flag
         self.B = B          #The bot to debug
+        
+    def DisplayPred(self):
+        for i in range(self.B.ts.m):
+            for j in range(self.B.ts.n):
+                rv = self.B.ts.CellLookup((i, j))
+                if rv is None:
+                    rv = 'N'
+                print('{:4s}'.format(rv), end = '')
+            print('')
 
     def PlotMap(self):
         mm = self.B.mm
         cp = mm.GetPosition()
         if self.B.p is not None:
-            ppx = [pp[0] for pp in self.B.p[0:self.B.pind]]
-            ppy = [pp[1] for pp in self.B.p[0:self.B.pind]]
+            ppx = [self.B.p[0], cp[0]]
+            ppy = [self.B.p[1], cp[1]]
         else:
             ppx, ppy = [cp[0]], [cp[1]]
-        pc = ['r'] + (['k'] * (len(ppx) - 2)) + ['g']
+        pc = ['r', 'g']
         C, CC = [], []
         for qp in mm.GetCells():
             C.append(qp[0:2])
