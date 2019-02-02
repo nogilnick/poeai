@@ -34,3 +34,12 @@ Class for classifying image data from the game. Used to identify obstacles, enem
 ### TFModel
 
 Contains pre-trained tensorflow models
+
+### FAQ
+
+**What is "CNNC" and why can't I import it?**
+
+CNNC stands for Convolutional Neural Network Classifier. It is from a neural network library I wrote here: https://github.com/nicholastoddsmith/pythonml **Note**: Currently, you will need to clone an older version where CNNC still exists or refactor TargetingSystem to use the newer API *ANNC*. (If you do this, *please* make a pull request).
+
+**Can I use this to farm for currency/experience?**
+**No.** The code is currently proof-of-concept quality and by no means production ready. The code is made available primarily for other researchers and *by no means intended as an end-user application*.
