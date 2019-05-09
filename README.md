@@ -21,7 +21,7 @@ Class that keeps track of the bot's internal representation of the world. Contai
 
 ### ProjMap.py
 
-Handles converting from 3D to 2D coordinates and visa-versa based on a projection matrix calibrated for Path of Exile.
+Handles converting from 3D to 2D coordinates and vice-versa based on a projection matrix calibrated for Path of Exile.
 
 ### ScreenViewer.py
 
